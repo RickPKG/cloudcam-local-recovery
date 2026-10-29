@@ -25,7 +25,9 @@ WIFI_ACK = "b98ee580-6a3c-11e5-8e85-0002a5d5c51b"
 WIFI_STATE = "a04d2280-4ad4-11e5-a444-0002a5d5c51b"
 SAVE_REQUEST = "6c5da720-4ad3-11e5-a50d-0002a5d5c51b"
 SAVE_ACK = "8f12d880-4ad3-11e5-ba7f-0002a5d5c51b"
-ALLOWED_WRITES = {KEY_REQUEST, REG_REQUEST, WIFI_REQUEST, SAVE_REQUEST}
+REGISTER_REQUEST = "c57ec5e9-262e-46e9-b251-8f7097a68f19"
+REGISTER_ACK = "cf5651b5-e83f-42aa-a3e0-519b9bbdf1c5"
+ALLOWED_WRITES = {KEY_REQUEST, REG_REQUEST, WIFI_REQUEST, SAVE_REQUEST, REGISTER_REQUEST}
 
 def seal(key, payload):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -33,6 +35,22 @@ def seal(key, payload):
     encrypted = AESGCM(key).encrypt(nonce, payload, None)
     fields = [(1, nonce), (2, encrypted[-16:]), (0, encrypted[:-16])]
     return b"".join(bytes([kind]) + len(value).to_bytes(2, "big") + value for kind, value in fields)
+
+def unseal(key, wire):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    fields = {}
+    offset = 0
+    while offset < len(wire):
+        if len(wire) - offset < 3:
+            raise ValueError("Truncated encrypted field")
+        kind = wire[offset]; size = int.from_bytes(wire[offset+1:offset+3], "big")
+        offset += 3
+        if kind not in (0,1,2,3) or kind in fields or size > len(wire)-offset:
+            raise ValueError("Invalid encrypted field")
+        fields[kind] = wire[offset:offset+size]; offset += size
+    if not all(k in fields for k in (0,1,2)) or len(fields[2]) != 16:
+        raise ValueError("Missing authenticated payload fields")
+    return AESGCM(key).decrypt(fields[1], fields[0]+fields[2], fields.get(3))
 
 def wifi_config(path):
     target = Path(path)
@@ -126,20 +144,22 @@ def run(args):
             while context.pending():
                 context.iteration(False)
             notifications.pop(chars[uuid][0], None)
-        def response(uuid):
+        def response(uuid, key=None):
+            def decode(raw):
+                return parse_json(raw if raw.startswith(b"{") or key is None else unseal(key, raw))
             context = GLib.MainContext.default()
-            end = time.monotonic() + 10
+            end = time.monotonic() + args.response_timeout
             while time.monotonic() < end:
                 while context.pending():
                     context.iteration(False)
                 raw = notifications.get(chars[uuid][0])
                 if raw:
-                    return parse_json(raw)
+                    return decode(raw)
                 time.sleep(0.05)
             raw = read(uuid)
             if not raw.strip(b"\x00"):
                 raise TimeoutError("No response notification; fallback value is empty")
-            return parse_json(raw)
+            return decode(raw)
         report["stage"] = "identify"
         report["identity"] = {name: read(uuid).decode("utf-8", "replace") for name, uuid in
                               [("manufacturer", MANUFACTURER), ("model", MODEL),
@@ -156,7 +176,7 @@ def run(args):
             write(REG_REQUEST, b"{}")
             report["registration_ack"] = response(REG_ACK)
             report["registration"] = parse_json(read(REG_STATE))
-        if args.handshake or args.wifi_config:
+        if args.handshake or args.wifi_config or args.registration_probe:
             from cryptography.hazmat.primitives.asymmetric import ec
             from cryptography.hazmat.primitives import serialization
             report["stage"] = "key_exchange"
@@ -188,6 +208,27 @@ def run(args):
                 if report["save_wifi_ack"].get("status") != 0:
                     raise ValueError("Camera rejected Wi-Fi configuration")
                 report["network_configuration_saved"] = True
+            if args.registration_probe:
+                report["stage"] = "registration_probe"
+                subscribe(REG_ACK)
+                write(REG_REQUEST, b"{}")
+                report["pre_registration_ack"] = response(REG_ACK)
+                before = parse_json(read(REG_STATE))
+                report["pre_registration"] = before
+                if before.get("state") != 0:
+                    raise ValueError("Synthetic probe is restricted to an unregistered camera")
+                subscribe(REGISTER_ACK)
+                write(REGISTER_REQUEST, seal(session, json.dumps({"token": "cloudcam-local-recovery-probe", "expiry": 60000}).encode()))
+                report["registration_probe_write_accepted"] = True
+                try:
+                    report["registration_probe_ack"] = response(REGISTER_ACK, session)
+                except Exception as error:
+                    report["registration_probe_ack_error"] = str(error)
+                time.sleep(3)
+                notifications.pop(chars[REG_ACK][0], None)
+                write(REG_REQUEST, b"{}")
+                report["post_registration_ack"] = response(REG_ACK)
+                report["post_registration"] = parse_json(read(REG_STATE))
             report["stage"] = "wifi_status"
             subscribe(WIFI_ACK)
             write(WIFI_REQUEST, b"{}")
@@ -224,6 +265,8 @@ def main():
     parser.add_argument("--refresh-registration", action="store_true")
     parser.add_argument("--handshake", action="store_true")
     parser.add_argument("--wifi-config", help="Explicitly save a WPA2 network from a private JSON file")
+    parser.add_argument("--registration-probe", action="store_true", help="Experimental synthetic-token registration attempt; use only on an isolated lab network")
+    parser.add_argument("--response-timeout", type=int, choices=range(1,61), metavar="1..60", default=60, help="Response timeout; original app uses 60 seconds")
     args = parser.parse_args()
     try:
         report, status = run(args)

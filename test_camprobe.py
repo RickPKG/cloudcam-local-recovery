@@ -15,6 +15,11 @@ class InputTests(unittest.TestCase):
         bad = bytes([fields[0][0] ^ 1]) + fields[0][1:] + fields[2]
         with self.assertRaises(InvalidTag):
             AESGCM(key).decrypt(fields[1], bad, None)
+    def test_unseal_and_malformed_envelopes(self):
+        key = bytes(range(16)); data = b'{"status":0}'
+        self.assertEqual(camprobe.unseal(key, camprobe.seal(key, data)), data)
+        for raw in (b"", b"\x01", b"\x01\x00\x10short", b"\x07\x00\x00"):
+            with self.assertRaises(ValueError): camprobe.unseal(key, raw)
     def test_address_validation(self):
         self.assertEqual(camprobe.address("aa:bb:cc:dd:ee:ff"), "AA:BB:CC:DD:EE:FF")
         for value in ("", "../hci0", "AA:BB:CC:DD:EE", "GG:BB:CC:DD:EE:FF"):

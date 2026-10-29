@@ -71,3 +71,9 @@ Useful evidence: model-family identifiers, sanitized service inventories, packet
 ## Provenance and license
 
 The implementation here is original. Protocol identifiers and behavioral comparisons are credited to the linked research. No code or firmware from the other repository is redistributed: no license was present in the revision inspected (`15c62350fed7557269ecd749e557b930e3860663`). This project's code and original documentation are MIT licensed. Amazon is not affiliated with this project.
+
+## Experimental registration probe
+
+`--registration-probe` deliberately attempts registration with a fixed synthetic token after checking that the camera reports state 0. It can change temporary registration state; it is not a read-only command. Use only on an isolated lab network with TLS capture already running. It does not obtain an Amazon login token or claim successful registration. The original app schema and actual failed certificate experiment are documented in EVIDENCE.md. A timeout does not prove an operation had no effect.
+
+The active-registration endpoint was tested with a matching test certificate and rejected it. Local video remains unavailable. The next research inputs are a verifiable firmware readout or a concrete reproducible certificate-bypass mechanism; a guessed flash or write to an undocumented BLE service is not included.
