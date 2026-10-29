@@ -10,17 +10,22 @@ An independent, MIT-licensed effort to recover owned, discontinued Amazon Cloud 
 - Read manufacturer `Amazon` and model identifier `A3SA7EC7BKYY63` directly over GATT.
 - Enumerate its provisioning, Wi-Fi, registration, encryption and undocumented services.
 - Read encryption capabilities: scheme 0.
+- Complete P-256 key exchange after a fresh power-up, consuming the asynchronous success notification and deriving a session key.
+- Save an encrypted WPA2 lab configuration. The camera joined the access point and obtained DHCP, independently confirming application despite a missing BLE acknowledgment.
+- Observe the camera reaching our local TLS listener and rejecting its replacement certificate.
 - One registration-refresh request returned status 0 and registration state 0. Later requests were rejected; do not assume that operation is reliable.
 
 ## Current blockers
 
-The secure-session request is rejected with ATT error `0x80`. A live Bluetooth trace shows all three Prepare Write fragments acknowledged, followed by rejection of Execute Write. MTU 82 alone does not explain this: another research project reports a working handshake at that MTU.
+Earlier secure-session requests failed with ATT `0x80` after the complete prepared write. After power cycling, writes succeeded; consuming asynchronous notifications fixed a separate response-reading bug. A reboot is an observed recovery on this unit, not a universal explanation for ATT 0x80.
 
-Firmware/hardware revision strings are placeholders (`XXXXX1`, `X.X.X`). They are not useful version numbers. No firmware dump, certificate bypass, RTSP stream or ONVIF endpoint has been verified on our unit.
+The camera joins our isolated Wi-Fi network, but rejects the test TLS certificate for its observed cloud endpoints. Certificate acceptance during a distinct active registration flow is still untested. Wi-Fi is a milestone, not local video recovery.
+
+Firmware/hardware revision strings are placeholders (`XXXXX1`, `X.X.X`). No firmware dump, certificate bypass, RTSP stream or ONVIF endpoint has been verified. See [EVIDENCE.md](EVIDENCE.md).
 
 ## Run the diagnostic
 
-Linux with BlueZ, Python 3, `python3-dbus` and (only for the optional handshake) `python3-cryptography`. On Debian/Ubuntu these are distribution packages. No pip dependencies are needed for identity reads.
+Linux with BlueZ, Python 3, `python3-dbus`, `python3-gi` and (only for the optional handshake/provisioning) `python3-cryptography`. On Debian/Ubuntu these are distribution packages. No pip dependencies are needed for identity reads.
 
 ```sh
 bluetoothctl --timeout 20 scan le
@@ -36,7 +41,9 @@ python3 camprobe.py --address AA:BB:CC:DD:EE:FF --refresh-registration
 python3 camprobe.py --address AA:BB:CC:DD:EE:FF --handshake
 ```
 
-The default only reads attributes. The two explicit flags write only a registration-state refresh or an ephemeral public-key exchange. The tool checks Amazon/model identity before those operations, does not change Wi-Fi credentials, and does not flash, erase, reset, pair or trust the camera. It releases its notification subscriptions and disconnects connections it created.
+The default only reads attributes. Registration refresh and handshake flags write diagnostic requests. The handshake also refreshes Wi-Fi state. The separate `--wifi-config FILE` flag explicitly saves a WPA2 network and therefore changes camera configuration; use only when intended. The file must have mode 600 and contain `ssid`, `psk`, and `keyMgmt: "WPA_PSK"`. Credentials and session keys are never printed. The tool checks Amazon/model identity before writes. It does not flash, erase, reset, pair or trust the camera, and releases subscriptions/connections it creates.
+
+A Wi-Fi save can take effect even when the acknowledgment times out. Check the access point and DHCP logs before retrying. This has occurred on our unit. [LAB.md](LAB.md) explains the isolated network and certificate experiment.
 
 JSON output omits the camera address, serial number, host identity and cryptographic keys. Exit 0 means the requested diagnostic completed, **not that video recovery works**. Exit 1 means the diagnostic failed; `stage` and `error` explain where. Inspect reports before publishing because device-supplied errors may contain unexpected information.
 
@@ -48,7 +55,7 @@ The separate [cloudcam-rescue investigation](https://github.com/dvdcastro/cloudc
 
 ## Recovery plan and success criteria
 
-1. Reproduce a secure Bluetooth session and identify why commands are rejected.
+1. **Achieved on one unit:** secure Bluetooth session and encrypted Wi-Fi provisioning. Reproduce across other units.
 2. Capture a controlled registration attempt on a separate camera test network.
 3. Test the documented certificate behavior without changing household DNS or trust stores.
 4. Reconstruct only the backend operations actually observed; obtain a local stream.
